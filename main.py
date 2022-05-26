@@ -1,108 +1,136 @@
 import pandas as pd
-import win32api, os, pikepdf, datetime, re
+import os
+import pikepdf
+import datetime
+import re
+import logging
+# import win32api
 from datetime import date
 from dateutil.relativedelta import relativedelta
 from dateutil.tz import tzutc, tzoffset
 
+
+logging.basicConfig(level=logging.DEBUG, filename="./test.log",
+                    filemode="a", format="%(asctime)s - %(levelname)s: %(message)s")
+
+archive_input = str(input('Digite o nome do arquivo de entrada: ').upper() + '.xlsx')
+if archive_input.startswith('.'):
+    archive_input = 'INPUT.xlsx'
+
+try:
+    df = pd.read_excel(archive_input)
+    logging.debug('Banco de Dados carregado com sucesso!')
+except Exception:
+    logging.critical(f'Houve um problema na importação do banco de dados! Arquivo "{archive_input}" não encontrado')
+    exit();
+
 df = pd.read_excel(f'INPUT.xlsx')
 
-unformat_cnpj = lambda cnpj: str(cnpj).replace('.','').replace('/','').replace('-','')
+def unformat_cnpj(cnpj): return str(cnpj).replace(
+    '.', '').replace('/', '').replace('-', '')
 
-def format_cnpj(cnpj):
-    if len(str(cnpj)) != 14: return 
-    formated = f"{cnpj[0]}{cnpj[1]}.{cnpj[2]}{cnpj[3]}{cnpj[4]}.{cnpj[5]}{cnpj[6]}{cnpj[7]}/{cnpj[8]}{cnpj[9]}{cnpj[10]}{cnpj[11]}-{cnpj[12]}{cnpj[13]}"
-    return formated
 
 def transform_date(date_str):
     global pdf_date_pattern
-    pdf_date_pattern = re.compile(''.join([
-        r"(D:)?",
-        r"(?P<year>\d\d\d\d)",
-        r"(?P<month>\d\d)",
-        r"(?P<day>\d\d)",
-        r"(?P<hour>\d\d)",
-        r"(?P<minute>\d\d)",
-        r"(?P<second>\d\d)",
-        r"(?P<tz_offset>[+-zZ])?",
-        r"(?P<tz_hour>\d\d)?",
-        r"'?(?P<tz_minute>\d\d)?'?"]))
+    pdf_date_pattern = re.compile(''.join([r"(D:)?", r"(?P<year>\d\d\d\d)", r"(?P<month>\d\d)", r"(?P<day>\d\d)", r"(?P<hour>\d\d)",
+                                  r"(?P<minute>\d\d)", r"(?P<second>\d\d)", r"(?P<tz_offset>[+-zZ])?", r"(?P<tz_hour>\d\d)?", r"'?(?P<tz_minute>\d\d)?'?"]))
     match = re.match(pdf_date_pattern, date_str)
     if match:
         date_info = match.groupdict()
         for k, v in date_info.items():
-            if v is None: pass
-            elif k == 'tz_offset': date_info[k] = v.lower()
-            else: date_info[k] = int(v)
-        if date_info['tz_offset'] in ('z', None): date_info['tzinfo'] = tzutc()
+            if v is None:
+                pass
+            elif k == 'tz_offset':
+                date_info[k] = v.lower()
+            else:
+                date_info[k] = int(v)
+        if date_info['tz_offset'] in ('z', None):
+            date_info['tzinfo'] = tzutc()
         else:
             multiplier = 1 if date_info['tz_offset'] == '+' else -1
-            date_info['tzinfo'] = tzoffset(None, multiplier*(3600 * date_info['tz_hour'] + 60 * date_info['tz_minute']))
-        for k in ('tz_offset', 'tz_hour', 'tz_minute'): del date_info[k]
+            date_info['tzinfo'] = tzoffset(
+                None, multiplier*(3600 * date_info['tz_hour'] + 60 * date_info['tz_minute']))
+        for k in ('tz_offset', 'tz_hour', 'tz_minute'):
+            del date_info[k]
         return datetime.datetime(**date_info)
 
-def crf_validity(cnpj):
-    for file in os.listdir('./CERTIDOES'):
-        if file == f"CRF-{unformat_cnpj(cnpj)}.pdf":
-            file_data = pikepdf.Pdf.open(f'./CERTIDOES/{file}')
-            docinfo = file_data.docinfo
-            for k,v in docinfo.items():
-                if k == "/CreationDate":
-                    if transform_date(str(v)).date() > (date.today() + relativedelta(days=29)): return False
-                    else: return True
 
-def crf_present(cnpj):
+for indexes, row in df.iterrows():
     files = os.listdir('./CERTIDOES')
-    a = unformat_cnpj(cnpj)
-    if f"CRF-{a}.pdf" in files: return True
-    else: return False
+    treated = unformat_cnpj(row['cnpj'])
+    if f"CND-{treated}.pdf" in files and f"CRF-{treated}.pdf" in files:
+        logging.info(
+            f'A CRF do CNPJ {row["cnpj"]} Está presente no diretório (1/2)')
+        logging.info(
+            f'A CND do CNPJ {row["cnpj"]} Está presente no diretório (2/2)')
+        file_data01 = pikepdf.Pdf.open(f'./CERTIDOES/CND-{treated}.pdf')
+        file_data02 = pikepdf.Pdf.open(f'./CERTIDOES/CRF-{treated}.pdf')
+        docinfo01 = file_data01.docinfo
+        docinfo02 = file_data02.docinfo
+        for k, v in docinfo01.items():
+            if k == "/CreationDate":
+                if not(transform_date(str(v)).date() > (date.today() + relativedelta(days=179))):
+                    logging.info(
+                        f'A CND do CNPJ {row["cnpj"]} ainda está válida!')
+                    for k, v in docinfo02.items():
+                        if k == "/CreationDate":
+                            if not(transform_date(str(v)).date() > (date.today() + relativedelta(days=29))):
+                                logging.info(
+                                    f'A CRF do CNPJ {row["cnpj"]} ainda está válida!')
+                                for i in range(row['quantidade']):
+                                    logging.info(
+                                        f'Imprimindo a CND do CNPJ {row["cnpj"]} ({i+1}/{row["quantidade"]})')
+                                    # win32api.ShellExecute(0,'print', f"CND-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
+                                    logging.info(
+                                        f'Imprimindo a CRF do CNPJ {row["cnpj"]} ({i+1}/{row["quantidade"]})')
+                                    # win32api.ShellExecute(0,'print', f"CRF-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
+                            else:
+                                logging.error(
+                                    f'A CRF do CNPJ {row["cnpj"]} não está válida. É necessária a reemissão!')
+                else:
+                    logging.error(
+                        f'A CND do CNPJ {row["cnpj"]} não está válida. É necessária a reemissão!')
 
-def check_crf(cnpj):
-    if crf_present(cnpj):
-        print(f'[CRF] - A CRF do CNPJ {cnpj} Está presente no diretório')
-        if crf_validity(cnpj):
-            print(f'[CRF] - A CRF do CNPJ {cnpj} Ainda é válida.')
-            return True
-        else: print(f'[CRF] - A CRF do CNPJ {cnpj} Não é mais válida. É Necessário a reemissão'); return False
-    else: print(f'[CRF] - A CRF do CNPJ {cnpj} Não está presente no diretório'); return False
+    elif f"CND-{treated}.pdf" in files and f"CRF-{treated}.pdf" not in files:
+        logging.info(
+            f'Apenas a CND do CNPJ {row["cnpj"]} Está presente no diretório')
+        file_data = pikepdf.Pdf.open(f'./CERTIDOES/CND-{treated}.pdf')
+        docinfo = file_data.docinfo
+        for k, v in docinfo.items():
+            if k == "/CreationDate":
+                if not(transform_date(str(v)).date() > (date.today() + relativedelta(days=179))):
+                    logging.info(
+                        f'A CND do CNPJ {row["cnpj"]} ainda está válida!')
+                    for i in range(row['quantidade']):
+                        logging.info(
+                            f'Imprimindo a CND do CNPJ {row["cnpj"]} ({i+1}/{row["quantidade"]})')
+                        # win32api.ShellExecute(0,'print', f"CND-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
+                else:
+                    logging.error(
+                        f'A CND do CNPJ {row["cnpj"]} não está válida. É necessária a reemissão!')
 
-def cnd_validity(cnpj):
-    for file in os.listdir('./CERTIDOES'):
-        if file == f"CND-{unformat_cnpj(cnpj)}.pdf":
-            file_data = pikepdf.Pdf.open(f'./CERTIDOES/{file}')
-            docinfo = file_data.docinfo
-            for k,v in docinfo.items():
-                if k == "/CreationDate":
-                    if transform_date(str(v)).date() > (date.today() + relativedelta(days=29)): return False
-                    else: return True
+    elif f"CND-{treated}.pdf" not in files and f"CRF-{treated}.pdf" in files:
+        logging.info(
+            f'Apenas a CRF do CNPJ {row["cnpj"]} Está presente no diretório')
+        file_data = pikepdf.Pdf.open(f'./CERTIDOES/CRF-{treated}.pdf')
+        docinfo = file_data.docinfo
+        for k, v in docinfo.items():
+            if k == "/CreationDate":
+                if not(transform_date(str(v)).date() > (date.today() + relativedelta(days=29))):
+                    logging.info(
+                        f'A CRF do CNPJ {row["cnpj"]} ainda está válida!')
+                    for i in range(row['quantidade']):
+                        logging.info(
+                            f'Imprimindo a CRF do CNPJ {row["cnpj"]} ({i+1}/{row["quantidade"]})')
+                        # win32api.ShellExecute(0,'print', f"CRF-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
+                else:
+                    logging.error(
+                        f'A CRF do CNPJ {row["cnpj"]} não está válida. É necessária a reemissão!')
 
-def cnd_present(cnpj):
-    files = os.listdir('./CERTIDOES')
-    treated = unformat_cnpj(cnpj)
-    if f"CND-{treated}.pdf" in files: return True
-    else: return False
+    elif f"CND-{treated}.pdf" not in files and f"CRF-{treated}.pdf" not in files:
+        logging.error(
+            f'A CRF do CNPJ {row["cnpj"]} Não está presente no diretório (1/2)')
+        logging.error(
+            f'A CND do CNPJ {row["cnpj"]} Não está presente no diretório (2/2)')
 
-def check_cnd(cnpj):
-    if cnd_present(cnpj):
-        print(f'[CND] - A CND do CNPJ {cnpj} Está presente no diretório')
-        if cnd_validity(cnpj):
-            print(f'[CND] - A CND do CNPJ {cnpj} Ainda é válida.')
-            return True
-        else: print(f'[CND] - A CND do CNPJ {cnpj} Não é mais válida. É Necessário a reemissão'); return False
-    else: print(f'[CND] - A CND do CNPJ {cnpj} Não está presente no diretório'); return False
-
-for indexes,row in df.iterrows():
-    if check_cnd(row['cnpj']) and check_crf(row['cnpj']):
-        for i in range(row['quantidade']):
-            win32api.ShellExecute(0,'print', f"CND-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
-            win32api.ShellExecute(0,'print', f"CRF-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
-        df = df.drop(index=indexes, axis=0)
-    elif check_cnd(row['cnpj']) and not check_crf(row['cnpj']):
-        for i in range(row['quantidade']):
-            win32api.ShellExecute(0,'print', f"CND-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
-        df = df.drop(index=indexes, axis=0)
-    elif not check_cnd(row['cnpj']) and check_crf(row['cnpj']):
-        for i in range(row['quantidade']):
-            win32api.ShellExecute(0,'print', f"CRF-{unformat_cnpj(row['cnpj'])}.pdf", None, './CERTIDOES', 0)
-        df = df.drop(index=indexes, axis=0)
-    df['cnpj'] = format_cnpj(row['cnpj'])
-df.to_excel(f"INPUT.xlsx", index=False, startcol=0)
+logging.debug('Término de execução')
